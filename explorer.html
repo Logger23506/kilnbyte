@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kilnbyte Explorer</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --card:#f4f4f7; --acc:#d9480f; --line:#dcdce3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141417; --fg:#ececf1; --mut:#9a9aa6; --card:#1e1e23; --line:#33333b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:860px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 12px; } h1 span { color:var(--acc); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px; }
+  .stat, .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .lbl { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .val { font-size:18px; font-weight:600; word-break:break-all; }
+  .mono { font:13px ui-monospace,Consolas,monospace; word-break:break-all; }
+  form { display:flex; gap:8px; margin-bottom:16px; }
+  input { flex:1; min-width:0; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
+  button { padding:9px 14px; border:0; border-radius:8px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; } td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; color:var(--mut); text-transform:uppercase; font-weight:500; }
+  a { color:var(--acc); cursor:pointer; text-decoration:none; } a:hover { text-decoration:underline; }
+  .card { margin-bottom:16px; } .err { color:#e03131; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>Kilnbyte</span> Explorer</h1>
+  <div class="stats">
+    <div class="stat"><div class="lbl">Height</div><div class="val" id="h">...</div></div>
+    <div class="stat"><div class="lbl">Supply (KBY)</div><div class="val" id="sup">...</div></div>
+    <div class="stat"><div class="lbl">Mempool</div><div class="val" id="mem">...</div></div>
+    <div class="stat"><div class="lbl">Peers</div><div class="val" id="peers">...</div></div>
+  </div>
+  <form id="f"><input id="q" placeholder="Search block height or address" autocomplete="off"><button>Search</button></form>
+  <div id="detail"></div>
+  <h2 style="font-size:16px">Latest blocks</h2>
+  <div class="card"><table><thead><tr><th>Height</th><th>Hash</th><th>Txs</th><th>Miner</th><th>Age</th></tr></thead><tbody id="rows"></tbody></table></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+async function rpc(method, params) {
+  const r = await fetch('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const j = await r.json(); if (j.error) throw new Error(j.error.message); return j.result;
+}
+const short = s => s.slice(0, 6) + '...' + s.slice(-4);
+const age = ts => { const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 90 ? s + 's' : Math.round(s / 60) + 'm'; };
+
+async function load() {
+  try {
+    const info = await rpc('getChainInfo', []); const sup = await rpc('getSupply', []);
+    $('h').textContent = info.height; $('sup').textContent = sup.uiAmount.replace(/\.?0+$/, '');
+    $('mem').textContent = info.mempool; $('peers').textContent = info.peers;
+    const heights = []; for (let i = info.height; i > Math.max(0, info.height - 15); i--) heights.push(i);
+    const blocks = await Promise.all(heights.map(h => rpc('getBlock', [h])));
+    $('rows').innerHTML = blocks.map(b => `<tr><td><a data-h="${b.height}">${b.height}</a></td><td class="mono">${esc(short(b.hash))}</td><td>${b.transactions.length}</td><td class="mono"><a data-a="${esc(b.miner)}">${esc(short(b.miner))}</a></td><td>${age(b.timestamp)}</td></tr>`).join('');
+  } catch (e) { $('rows').innerHTML = '<tr><td colspan="5" class="err">Cannot reach node</td></tr>'; }
+}
+
+async function showBlock(h) {
+  try {
+    const b = await rpc('getBlock', [h]);
+    $('detail').innerHTML = `<div class="card"><div class="lbl">Block ${b.height}</div>
+      <div class="mono">Hash: ${esc(b.hash)}<br>Previous: ${esc(b.previousHash)}<br>Miner: <a data-a="${esc(b.miner)}">${esc(b.miner)}</a><br>Time: ${new Date(b.timestamp).toISOString()} | Difficulty: ${b.bits} bits</div>
+      ${b.transactions.length ? '<table><thead><tr><th>From</th><th>To</th><th>Amount</th></tr></thead><tbody>' + b.transactions.map(t => `<tr><td class="mono"><a data-a="${esc(t.from)}">${esc(short(t.from))}</a></td><td class="mono"><a data-a="${esc(t.to)}">${esc(short(t.to))}</a></td><td>${esc(t.uiAmount)} KBY</td></tr>`).join('') + '</tbody></table>' : '<p>No transactions (block reward only).</p>'}</div>`;
+  } catch (e) { $('detail').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+async function showAddr(a) {
+  try {
+    const r = await rpc('getBalance', [a]);
+    $('detail').innerHTML = `<div class="card"><div class="lbl">Address</div><div class="mono">${esc(a)}</div><div class="val">${esc(r.uiAmount)} KBY</div></div>`;
+  } catch (e) { $('detail').innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('a'); if (!t) return;
+  if (t.dataset.h) showBlock(+t.dataset.h); else if (t.dataset.a) showAddr(t.dataset.a);
+});
+$('f').onsubmit = e => { e.preventDefault(); const q = $('q').value.trim(); if (/^\d+$/.test(q)) showBlock(+q); else if (q) showAddr(q); };
+load(); setInterval(load, 3000);
+</script>
+</body>
+</html>

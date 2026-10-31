@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kilnbyte Wallet</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --card:#f4f4f7; --acc:#d9480f; --line:#dcdce3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141417; --fg:#ececf1; --mut:#9a9aa6; --card:#1e1e23; --line:#33333b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; } h1 span { color:var(--acc); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin:16px 0; }
+  .lbl { font-size:12px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; }
+  .bal { font-size:28px; font-weight:600; margin:2px 0 10px; word-break:break-all; }
+  .addr { font:13px ui-monospace,Consolas,monospace; word-break:break-all; }
+  input { width:100%; padding:10px; margin:6px 0 12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
+  button { padding:9px 14px; border:0; border-radius:8px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; margin:0 6px 6px 0; }
+  button.sec { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  #msg { min-height:24px; font-size:14px; word-break:break-all; } .err { color:#e03131; } .ok { color:#2f9e44; }
+  p.note { font-size:13px; color:var(--mut); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>Kilnbyte</span> Wallet</h1>
+  <p class="note">Self-custody KBY wallet. Your key never leaves this browser; transactions are signed locally.</p>
+
+  <div class="card" id="noWallet">
+    <button id="create">Create wallet</button>
+    <button class="sec" id="importBtn">Import key</button>
+  </div>
+
+  <div class="card" id="wallet" hidden>
+    <div class="lbl">Balance</div>
+    <div class="bal"><span id="bal">...</span> KBY</div>
+    <div class="lbl">Your address</div>
+    <div class="addr" id="addr"></div>
+    <div style="margin-top:12px">
+      <button class="sec" id="copy">Copy address</button>
+      <button class="sec" id="refresh">Refresh</button>
+      <button class="sec" id="export">Show private key</button>
+      <button class="sec" id="logout">Remove from browser</button>
+    </div>
+    <div class="addr" id="keybox" hidden></div>
+  </div>
+
+  <div class="card" id="sendCard" hidden>
+    <div class="lbl">Send KBY</div>
+    <input id="to" placeholder="Recipient address" autocomplete="off">
+    <input id="amt" placeholder="Amount (up to 8 decimals)" inputmode="decimal" autocomplete="off">
+    <button id="send">Send</button>
+  </div>
+
+  <div class="card">
+    <div class="lbl">Node</div>
+    <input id="node" autocomplete="off">
+    <div class="lbl">Chain</div>
+    <div id="chain" class="addr">...</div>
+  </div>
+  <div id="msg" role="status"></div>
+</main>
+<script>
+const A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const COIN = 100000000n;
+const PKCS8 = Uint8Array.from([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+const $ = id => document.getElementById(id);
+let key = null, seed = null, addr = null;
+
+function b58enc(b) {
+  const d = [];
+  for (const x of b) { let c = x; for (let j = 0; j < d.length; j++) { c += d[j] << 8; d[j] = c % 58; c = (c / 58) | 0; } while (c) { d.push(c % 58); c = (c / 58) | 0; } }
+  let s = ''; for (const x of b) { if (x) break; s += '1'; }
+  for (let i = d.length - 1; i >= 0; i--) s += A[d[i]];
+  return s;
+}
+function b58dec(s) {
+  const b = [];
+  for (const ch of s) { let c = A.indexOf(ch); if (c < 0) throw new Error('Invalid address'); for (let j = 0; j < b.length; j++) { c += b[j] * 58; b[j] = c & 255; c >>= 8; } while (c) { b.push(c & 255); c >>= 8; } }
+  for (const ch of s) { if (ch !== '1') break; b.push(0); }
+  return Uint8Array.from(b.reverse());
+}
+const toHex = u => [...u].map(x => x.toString(16).padStart(2, '0')).join('');
+const fromHex = h => { if (!/^[0-9a-fA-F]{64}$/.test(h.trim())) throw new Error('Key must be 64 hex characters'); return Uint8Array.from(h.trim().match(/../g).map(x => parseInt(x, 16))); };
+function say(t, cls) { const m = $('msg'); m.textContent = t; m.className = cls || ''; }
+
+function store(op, v) { try { return op === 'get' ? localStorage.getItem('kby_seed') : op === 'set' ? localStorage.setItem('kby_seed', v) : localStorage.removeItem('kby_seed'); } catch { return null; } }
+
+async function setSeed(s) {
+  const pkcs8 = new Uint8Array(48); pkcs8.set(PKCS8); pkcs8.set(s, 16);
+  key = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, true, ['sign']);
+  const jwk = await crypto.subtle.exportKey('jwk', key);
+  const x = jwk.x.replace(/-/g, '+').replace(/_/g, '/');
+  addr = b58enc(Uint8Array.from(atob(x + '=='.slice(0, (4 - x.length % 4) % 4)), c => c.charCodeAt(0)));
+  seed = s; store('set', toHex(s));
+  $('addr').textContent = addr; $('keybox').hidden = true;
+  $('noWallet').hidden = true; $('wallet').hidden = false; $('sendCard').hidden = false;
+  refresh();
+}
+
+async function rpc(method, params) {
+  const r = await fetch($('node').value.replace(/\/$/, '') + '/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+
+async function refresh() {
+  try {
+    const s = await rpc('getSupply', []); const h = await rpc('getBlockHeight', []);
+    $('chain').textContent = 'Height ' + h + ' | Supply ' + s.uiAmount + ' / ' + s.uiMax + ' KBY';
+    if (addr) $('bal').textContent = (await rpc('getBalance', [addr])).uiAmount;
+  } catch (e) { $('chain').textContent = 'Cannot reach node'; }
+}
+
+function parseAmount(s) {
+  const m = /^(\d*)(?:\.(\d{0,8}))?$/.exec(s.trim());
+  if (!m || (!m[1] && !m[2])) throw new Error('Invalid amount');
+  return BigInt(m[1] || '0') * COIN + BigInt((m[2] || '').padEnd(8, '0'));
+}
+
+$('send').onclick = async () => {
+  try {
+    const to = b58dec($('to').value.trim()); if (to.length !== 32) throw new Error('Invalid address');
+    const amount = parseAmount($('amt').value); if (amount <= 0n) throw new Error('Amount must be positive');
+    const nonce = BigInt(await rpc('getNextNonce', [addr]));
+    const tx = new Uint8Array(144), dv = new DataView(tx.buffer);
+    tx.set(b58dec(addr), 0); tx.set(to, 32); dv.setBigUint64(64, amount, true); dv.setBigUint64(72, nonce, true);
+    tx.set(new Uint8Array(await crypto.subtle.sign('Ed25519', key, tx.slice(0, 80))), 80);
+    const sig = await rpc('sendTransaction', [b58enc(tx)]);
+    say('Sent. Signature: ' + sig, 'ok'); $('amt').value = ''; setTimeout(refresh, 1500);
+  } catch (e) { say(e.message, 'err'); }
+};
+
+$('create').onclick = () => setSeed(crypto.getRandomValues(new Uint8Array(32))).catch(e => say('This browser lacks Ed25519 support: ' + e.message, 'err'));
+$('importBtn').onclick = () => { const k = prompt('Paste your 64-character hex private key (the contents of wallet.key):'); if (k) setSeed(fromHex(k)).catch(e => say(e.message, 'err')); };
+$('refresh').onclick = refresh;
+$('copy').onclick = () => navigator.clipboard.writeText(addr).then(() => say('Address copied', 'ok'));
+$('export').onclick = () => { const b = $('keybox'); b.textContent = toHex(seed); b.hidden = !b.hidden; };
+$('logout').onclick = () => { if (confirm('Remove the key from this browser? Make sure it is backed up.')) { store('del'); location.reload(); } };
+
+$('node').value = location.protocol.startsWith('http') ? location.origin : 'http://127.0.0.1:8899';
+const saved = store('get');
+if (saved) setSeed(fromHex(saved)).catch(() => {}); else refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

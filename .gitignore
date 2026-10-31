@@ -1,0 +1,5 @@
+target/
+wallet.key
+*.key
+chain.dat
+*.dat
