@@ -502,8 +502,9 @@ fn call(node: &Shared, method: &str, p: &Value) -> Result<Value, String> {
         }
         "addPeer" => {
             let peer = p[0].as_str().ok_or("host:port required")?.trim().to_string();
-            if peer.len() > 100 || peer.rsplit_once(':').map_or(true, |(_, port)| port.parse::<u16>().is_err()) {
-                return Err("peer must look like host:port".into());
+            let https = peer.starts_with("https://");
+            if peer.len() > 100 || (!https && peer.rsplit_once(':').map_or(true, |(_, port)| port.parse::<u16>().is_err())) {
+                return Err("peer must look like host:port or https://host".into());
             }
             if !n.peers.contains(&peer) && n.peers.len() < 32 {
                 println!("peer added: {}", peer);
@@ -740,16 +741,55 @@ fn rpc(method: &str, params: Value) -> Result<Value, String> {
     rpc_at(&url, method, params).map_err(|e| format!("{} (node at {}; start it with `kilnbyte node`)", e, url))
 }
 
+fn dechunk(body: &str) -> String {
+    let (mut out, mut rest) = (String::new(), body);
+    while let Some((size, tail)) = rest.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+        if n == 0 || tail.len() < n {
+            break;
+        }
+        out.push_str(&tail[..n]);
+        rest = tail[n..].trim_start_matches("\r\n");
+    }
+    out
+}
+
+/// `url` is `host:port` (plain HTTP) or `https://host[:port]` (TLS, port defaults to 443).
 fn rpc_at(url: &str, method: &str, params: Value) -> Result<Value, String> {
-    let addr = url.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("unresolvable address")?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|e| format!("cannot connect: {}", e))?;
-    let _ = s.set_read_timeout(Some(Duration::from_secs(20)));
+    let (tls, hostport) = match url.strip_prefix("https://") {
+        Some(h) => (true, h.trim_end_matches('/')),
+        None => (false, url),
+    };
+    let addr_str = if tls && !hostport.contains(':') { format!("{}:443", hostport) } else { hostport.to_string() };
+    let host = addr_str.rsplit_once(':').map_or(addr_str.as_str(), |x| x.0).to_string();
+    let addr = addr_str.to_socket_addrs().map_err(|e| e.to_string())?.next().ok_or("unresolvable address")?;
+    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(3)).map_err(|e| format!("cannot connect: {}", e))?;
+    let _ = tcp.set_read_timeout(Some(Duration::from_secs(20)));
     let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
-    write!(s, "POST / HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", url, body.len(), body).map_err(|e| e.to_string())?;
-    let mut resp = String::new();
-    s.read_to_string(&mut resp).map_err(|e| e.to_string())?;
-    let payload = resp.split_once("\r\n\r\n").ok_or("empty response")?.1;
-    let v: Value = serde_json::from_str(payload).map_err(|e| e.to_string())?;
+    let req = format!("POST / HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", hostport, body.len(), body);
+    let mut raw = Vec::new();
+    if tls {
+        let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from(host).map_err(|e| e.to_string())?;
+        let conn = rustls::ClientConnection::new(Arc::new(cfg), name).map_err(|e| e.to_string())?;
+        let mut s = rustls::StreamOwned::new(conn, tcp);
+        s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        // Servers often close without a TLS close_notify; keep whatever arrived before the error.
+        let _ = s.read_to_end(&mut raw);
+    } else {
+        let mut s = tcp;
+        s.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+        s.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    }
+    let resp = String::from_utf8_lossy(&raw).to_string();
+    let (head, payload) = resp.split_once("\r\n\r\n").ok_or("empty response")?;
+    let payload = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") { dechunk(payload) } else { payload.to_string() };
+    let v: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
     match v.get("error") {
         Some(e) => Err(e["message"].as_str().unwrap_or("rpc error").to_string()),
         None => Ok(v["result"].clone()),

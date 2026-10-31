@@ -1,4 +1,4 @@
-# Kilnbyte (KBY)
+﻿# Kilnbyte (KBY)
 
 Bitcoin-style proof-of-work mining at Solana-style speed: SHA-256d mining, a hard-capped supply, halving rewards,
 difficulty retargeting, and a 400 ms target block time. Keys and addresses are Ed25519 / base58 (Solana-style).
@@ -24,6 +24,7 @@ kilnbyte node --public --peer <seed-host>:8899 --advertise <your-public-host>:88
 ```
 
 - `--peer` connect to another node (repeatable, or set `KBY_PEERS=a:8899,b:8899`)
+- Peers can be plain `host:port` or `https://host` (TLS), e.g. `--peer https://kilnbyte-node.onrender.com`
 - `--advertise` tell peers where to reach you so they sync from you too
 - `--miner <ADDR>` address that receives block rewards (defaults to `wallet.key`)
 - `--public` listen on all interfaces instead of localhost only
@@ -53,3 +54,4 @@ The private key is stored in `wallet.key` (or `KBY_WALLET`). Back it up and neve
 ## Status
 
 Experimental. Not audited. No rate limiting on the RPC server.
+
