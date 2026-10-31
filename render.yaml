@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: kilnbyte-node
+    runtime: docker
+    plan: free # spins down after ~15 min without traffic and wakes on the next request
+    healthCheckPath: /
+    envVars:
+      - key: KBY_MINER
+        value: 5hQMS2A2rDKcfHAMzeJPm2YydiGwRfJ6Yd5uLp1d8vsm

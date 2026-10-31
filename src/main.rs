@@ -590,11 +590,12 @@ fn handle_conn(node: Shared, mut s: TcpStream) {
 
 fn run_node(args: &[String]) -> Result<(), String> {
     let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
-    let miner = match flag("--miner") {
+    // KBY_MINER and PORT let container hosts (Render, Docker) configure the node without CLI args.
+    let miner = match flag("--miner").or_else(|| std::env::var("KBY_MINER").ok()) {
         Some(a) => parse_addr(&a)?,
         None => load_wallet()?.addr,
     };
-    let port: u16 = flag("--port").and_then(|p| p.parse().ok()).unwrap_or(RPC_PORT);
+    let port: u16 = flag("--port").or_else(|| std::env::var("PORT").ok()).and_then(|p| p.parse().ok()).unwrap_or(RPC_PORT);
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     let mine_threads = threads.saturating_sub(1).max(1);
 
