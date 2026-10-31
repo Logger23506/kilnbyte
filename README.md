@@ -31,6 +31,12 @@ kilnbyte node --public --peer <seed-host>:8899 --advertise <your-public-host>:88
 
 Data is saved to `chain.dat` (override with `KBY_DATA`).
 
+## Host a node
+
+- **Docker:** `docker build -t kilnbyte .` then `docker run -p 8899:8899 -v kby:/data kilnbyte --miner <ADDR>`
+- **GitHub Codespaces:** open the repo in a Codespace, run `./target/release/kilnbyte node --public --miner <ADDR>`,
+  and make port 8899 public. Codespaces stop when idle, so use it for testing, not as a permanent seed node.
+
 ## Wallet CLI
 
 ```bash

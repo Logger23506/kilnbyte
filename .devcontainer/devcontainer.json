@@ -1,0 +1,9 @@
+{
+  "name": "Kilnbyte node",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "postCreateCommand": "cargo build --release",
+  "forwardPorts": [8899],
+  "portsAttributes": {
+    "8899": { "label": "Kilnbyte RPC / wallet / explorer", "onAutoForward": "notify" }
+  }
+}
